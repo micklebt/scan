@@ -51,6 +51,11 @@ export default function CaptureStation() {
   const [duplex, setDuplex] = useState(false);
   const [fileName, setFileName] = useState("Scan_" + new Date().toISOString().split('T')[0]);
 
+  // Tree.bin bucket state
+  const mockBuckets = ["Bucket_001", "Bucket_002", "Bucket_042", "Bucket_105", "Bucket_999"];
+  const [selectedBucket, setSelectedBucket] = useState(mockBuckets[0]);
+  const [isReadingTree, setIsReadingTree] = useState(false);
+
   // Handle mock scanning process
   const handleScan = () => {
     setIsScanning(true);
@@ -121,14 +126,14 @@ export default function CaptureStation() {
 
     toast({
       title: "Saving PDF...",
-      description: `Saving ${selectedCount} pages to C:/Scans/${fileName}.pdf`,
+      description: `Saving ${selectedCount} pages to undisclosed directory as ${selectedBucket}.pdf`,
     });
     
     // In a real app, this would trigger the actual save process
     setTimeout(() => {
       toast({
         title: "Success",
-        description: `File saved successfully to local directory.`,
+        description: `File saved successfully to secure target.`,
         variant: "default"
       });
     }, 1500);
@@ -266,42 +271,58 @@ export default function CaptureStation() {
 
               {/* Export Settings */}
               <div className="space-y-4">
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Output Settings</h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Target Destination</h2>
+                  <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => {
+                    setIsReadingTree(true);
+                    setTimeout(() => setIsReadingTree(false), 800);
+                  }}>
+                    <RefreshCcw className={`w-3 h-3 mr-1 ${isReadingTree ? 'animate-spin' : ''}`} />
+                    Read tree.bin
+                  </Button>
+                </div>
                 
-                <div className="space-y-4">
+                <div className="space-y-4 bg-muted/30 p-3 rounded-lg border border-border">
                   <div className="space-y-2">
-                    <Label htmlFor="filename">File Name</Label>
-                    <Input 
-                      id="filename" 
-                      value={fileName} 
-                      onChange={(e) => setFileName(e.target.value)} 
-                    />
+                    <Label htmlFor="bucket">Select Bucket (tree.bin)</Label>
+                    <Select value={selectedBucket} onValueChange={setSelectedBucket}>
+                      <SelectTrigger id="bucket" className="bg-white">
+                        <SelectValue placeholder="Select bucket" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {mockBuckets.map(bucket => (
+                          <SelectItem key={bucket} value={bucket}>{bucket}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   
                   <div className="space-y-2">
-                    <Label htmlFor="location">Save Location</Label>
+                    <Label htmlFor="location">Target Directory</Label>
                     <div className="flex space-x-2">
                       <Input 
                         id="location" 
-                        value="C:\Users\Public\Documents\Scans" 
+                        value="[ENCRYPTED] \ *** \ Secure_Storage" 
                         readOnly 
-                        className="bg-muted/50 text-muted-foreground"
+                        className="bg-slate-100 text-slate-500 font-mono text-xs"
                       />
-                      <Button variant="outline" size="icon" title="Browse">
-                        <FolderOpen className="w-4 h-4" />
-                      </Button>
                     </div>
+                  </div>
+                  
+                  <div className="pt-2 text-xs text-muted-foreground flex items-center space-x-1">
+                    <FileText className="w-3 h-3" />
+                    <span>Output: {selectedBucket}.pdf</span>
                   </div>
 
                   <Button 
                     variant="default" 
-                    className="w-full bg-green-600 hover:bg-green-700 text-white"
+                    className="w-full bg-slate-800 hover:bg-slate-900 text-white mt-2"
                     onClick={handleSavePDF}
                     disabled={pages.length === 0}
                     data-testid="button-save-pdf"
                   >
                     <Save className="w-4 h-4 mr-2" />
-                    Save Selected to PDF
+                    Export to Shared Disk
                   </Button>
                 </div>
               </div>
