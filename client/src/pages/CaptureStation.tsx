@@ -26,6 +26,7 @@ import { Progress } from "@/components/ui/progress";
 
 // Mock data for initial states
 const MOCK_SCANNERS = [
+  "Sharp MX-M503N (162.168.1.234)",
   "Fujitsu fi-7160",
   "Epson ScanSnap iX1600",
   "HP WorkForce DS-530II"
@@ -49,7 +50,16 @@ export default function CaptureStation() {
   const [dpi, setDpi] = useState("300");
   const [colorMode, setColorMode] = useState("color");
   const [duplex, setDuplex] = useState(false);
-  const [fileName, setFileName] = useState("Scan_" + new Date().toISOString().split('T')[0]);
+  const [paperSize, setPaperSize] = useState("letter");
+  const [source, setSource] = useState("feeder");
+  
+  // File Naming state
+  const [lastSeqNumber, setLastSeqNumber] = useState(1042);
+  const [barcodeDetected, setBarcodeDetected] = useState(false);
+  const [detectedBarcode, setDetectedBarcode] = useState("B7492");
+  
+  // File Naming string
+  const currentFileName = barcodeDetected ? detectedBarcode : `SCAN_${lastSeqNumber.toString().padStart(4, '0')}`;
 
   // Tree.bin bucket state
   const mockBuckets = ["Bucket_001", "Bucket_002", "Bucket_042", "Bucket_105", "Bucket_999"];
@@ -126,16 +136,21 @@ export default function CaptureStation() {
 
     toast({
       title: "Saving PDF...",
-      description: `Saving ${selectedCount} pages to undisclosed directory as ${selectedBucket}.pdf`,
+      description: `Saving ${selectedCount} pages to f:\\scan-images\\${currentFileName}.pdf`,
     });
     
     // In a real app, this would trigger the actual save process
     setTimeout(() => {
       toast({
         title: "Success",
-        description: `File saved successfully to secure target.`,
+        description: `File saved successfully to local drive.`,
         variant: "default"
       });
+      
+      // Increment sequential number if not using barcode
+      if (!barcodeDetected) {
+        setLastSeqNumber(prev => prev + 1);
+      }
     }, 1500);
   };
 
@@ -194,6 +209,34 @@ export default function CaptureStation() {
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="paper-size">Paper Size</Label>
+                      <Select value={paperSize} onValueChange={setPaperSize}>
+                        <SelectTrigger id="paper-size">
+                          <SelectValue placeholder="Size" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="letter">Letter (8.5x11")</SelectItem>
+                          <SelectItem value="legal">Legal (8.5x14")</SelectItem>
+                          <SelectItem value="a4">A4</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="source">Source</Label>
+                      <Select value={source} onValueChange={setSource}>
+                        <SelectTrigger id="source">
+                          <SelectValue placeholder="Source" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="feeder">Sheet Feeder</SelectItem>
+                          <SelectItem value="flatbed">Flatbed</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
@@ -271,38 +314,32 @@ export default function CaptureStation() {
 
               {/* Export Settings */}
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Target Destination</h2>
-                  <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => {
-                    setIsReadingTree(true);
-                    setTimeout(() => setIsReadingTree(false), 800);
-                  }}>
-                    <RefreshCcw className={`w-3 h-3 mr-1 ${isReadingTree ? 'animate-spin' : ''}`} />
-                    Read tree.bin
-                  </Button>
-                </div>
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Output Settings</h2>
                 
                 <div className="space-y-4 bg-muted/30 p-3 rounded-lg border border-border">
-                  <div className="space-y-2">
-                    <Label htmlFor="bucket">Select Bucket (tree.bin)</Label>
-                    <Select value={selectedBucket} onValueChange={setSelectedBucket}>
-                      <SelectTrigger id="bucket" className="bg-white">
-                        <SelectValue placeholder="Select bucket" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {mockBuckets.map(bucket => (
-                          <SelectItem key={bucket} value={bucket}>{bucket}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="flex items-center justify-between pb-2 border-b border-border">
+                    <Label htmlFor="barcode-detect" className="cursor-pointer font-semibold text-primary">Simulate 3of9 Barcode</Label>
+                    <Switch id="barcode-detect" checked={barcodeDetected} onCheckedChange={setBarcodeDetected} />
                   </div>
                   
+                  {barcodeDetected && (
+                     <div className="space-y-2">
+                       <Label htmlFor="detected-barcode" className="text-xs">Detected Barcode Value</Label>
+                       <Input 
+                         id="detected-barcode" 
+                         value={detectedBarcode} 
+                         onChange={(e) => setDetectedBarcode(e.target.value)}
+                         className="h-8 font-mono text-sm"
+                       />
+                     </div>
+                  )}
+
                   <div className="space-y-2">
                     <Label htmlFor="location">Target Directory</Label>
                     <div className="flex space-x-2">
                       <Input 
                         id="location" 
-                        value="[ENCRYPTED] \ *** \ Secure_Storage" 
+                        value="f:\scan-images\" 
                         readOnly 
                         className="bg-slate-100 text-slate-500 font-mono text-xs"
                       />
@@ -311,7 +348,7 @@ export default function CaptureStation() {
                   
                   <div className="pt-2 text-xs text-muted-foreground flex items-center space-x-1">
                     <FileText className="w-3 h-3" />
-                    <span>Output: {selectedBucket}.pdf</span>
+                    <span>Output File: <strong>{currentFileName}.pdf</strong></span>
                   </div>
 
                   <Button 
@@ -322,7 +359,7 @@ export default function CaptureStation() {
                     data-testid="button-save-pdf"
                   >
                     <Save className="w-4 h-4 mr-2" />
-                    Export to Shared Disk
+                    Save to Local Drive
                   </Button>
                 </div>
               </div>
