@@ -26,7 +26,7 @@ import { Progress } from "@/components/ui/progress";
 
 // Mock data for initial states
 const MOCK_SCANNERS = [
-  "Sharp MX-M503N (192.169.1.234)",
+  "Sharp MX-M503N (192.168.1.234)",
   "Fujitsu fi-7160",
   "Epson ScanSnap iX1600",
   "HP WorkForce DS-530II"
