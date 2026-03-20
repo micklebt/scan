@@ -7,6 +7,9 @@
     "dev:client": "vite dev --port 5000",
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
     "build": "tsx script/build.ts",
+    "build:help": "pwsh -ExecutionPolicy Bypass -File script/build-help.ps1",
+    "build:msi": "pwsh -ExecutionPolicy Bypass -File script/build-msi.ps1",
+    "launch": "pwsh -ExecutionPolicy Bypass -File script/DocuCapture-Launch.ps1",
     "start": "cross-env NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "db:push": "drizzle-kit push"
