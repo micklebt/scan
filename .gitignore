@@ -1,6 +1,5 @@
 node_modules
 dist
-script/launcher.config.ps1
 installer/wix/Generated.wxs
 release/*.msi
 release/*.wixpdb
