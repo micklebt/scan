@@ -11,6 +11,9 @@ import { promisify } from "util";
 
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 const OUTPUT_DIR = path.join(process.cwd(), "scan-output");
+const HELP_DIR = path.join(process.cwd(), "help");
+const HELP_CHM_PATH = path.join(HELP_DIR, "DocuCapture-Help.chm");
+const HELP_INDEX_PATH = path.join(HELP_DIR, "chm", "index.htm");
 
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
@@ -114,6 +117,16 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  app.get("/api/help", async (_req, res) => {
+    if (fs.existsSync(HELP_CHM_PATH)) {
+      return res.download(HELP_CHM_PATH, "DocuCapture-Help.chm");
+    }
+    if (fs.existsSync(HELP_INDEX_PATH)) {
+      return res.sendFile(HELP_INDEX_PATH);
+    }
+    return res.status(404).json({ message: "Help file not found" });
+  });
+
   app.get("/api/scanner/status", async (_req, res) => {
     const hostStatus = await getScannerHostStatus();
     const hasCommand = Boolean(process.env.TWAIN_SCAN_COMMAND);

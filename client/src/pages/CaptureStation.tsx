@@ -9,6 +9,7 @@ import {
   ZoomOut,
   Trash2,
   CheckSquare,
+  CircleHelp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -206,6 +207,12 @@ export default function CaptureStation() {
           </div>
         </div>
         <div className="flex items-center space-x-4">
+          <Button variant="outline" size="sm" asChild>
+            <a href="/api/help" target="_blank" rel="noreferrer">
+              <CircleHelp className="w-4 h-4 mr-2" />
+              Help
+            </a>
+          </Button>
           <Badge variant="outline" className="px-3 py-1 font-mono text-xs" data-testid="text-scanner-badge">
             {scannerDisplay}
           </Badge>
