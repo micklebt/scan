@@ -1,6 +1,10 @@
 node_modules
 dist
 script/launcher.config.ps1
+installer/wix/Generated.wxs
+release/*.msi
+release/*.wixpdb
+release/*.cab
 .DS_Store
 server/public
 vite.config.ts.*
