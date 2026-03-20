@@ -4,11 +4,7 @@ $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $ConfigPath = Join-Path $PSScriptRoot "launcher.config.ps1"
 $ExamplePath = Join-Path $PSScriptRoot "launcher.config.ps1.example"
 
-if (Test-Path $ConfigPath) {
-  . $ConfigPath
-} elseif (Test-Path $ExamplePath) {
-  . $ExamplePath
-} else {
+if (-not (Test-Path $ExamplePath)) {
   [System.Windows.Forms.MessageBox]::Show(
     "Missing launcher.config.ps1.example in script folder.",
     "DocuCapture",
@@ -18,8 +14,19 @@ if (Test-Path $ConfigPath) {
   exit 1
 }
 
+. $ExamplePath
+
+if (Test-Path $ConfigPath) {
+  . $ConfigPath
+}
+
 if (-not $LauncherDatabaseUrl) {
-  [System.Windows.Forms.MessageBox]::Show("launcher.config.ps1 must set `$LauncherDatabaseUrl.", "DocuCapture", "OK", "Error") | Out-Null
+  [System.Windows.Forms.MessageBox]::Show(
+    "DATABASE_URL is not set. Edit launcher.config.ps1.example or script\launcher.config.ps1.",
+    "DocuCapture",
+    "OK",
+    "Error"
+  ) | Out-Null
   exit 1
 }
 
