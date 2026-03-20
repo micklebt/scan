@@ -20,14 +20,50 @@ if (Test-Path $ConfigPath) {
   . $ConfigPath
 }
 
-if (-not $LauncherDatabaseUrl) {
-  [System.Windows.Forms.MessageBox]::Show(
-    "DATABASE_URL is not set. Edit launcher.config.ps1.example or script\launcher.config.ps1.",
-    "DocuCapture",
-    "OK",
-    "Error"
-  ) | Out-Null
-  exit 1
+function Read-EnvValue([string]$file, [string]$key) {
+  if (-not (Test-Path $file)) { return $null }
+  foreach ($line in Get-Content -LiteralPath $file) {
+    $t = $line.Trim()
+    if (-not $t -or $t.StartsWith("#")) { continue }
+    if ($t -match "^\s*$key\s*=\s*(.*)$") {
+      $v = $matches[1].Trim()
+      if ($v.Length -ge 2 -and $v.StartsWith('"') -and $v.EndsWith('"')) {
+        $v = $v.Substring(1, $v.Length - 2) -replace '\\"', '"'
+      }
+      return $v
+    }
+  }
+  return $null
+}
+
+if ([string]::IsNullOrWhiteSpace($LauncherDatabaseUrl)) {
+  $LauncherDatabaseUrl = Read-EnvValue (Join-Path $ProjectRoot "docucapture.env") "DATABASE_URL"
+}
+if ([string]::IsNullOrWhiteSpace($LauncherDatabaseUrl)) {
+  $LauncherDatabaseUrl = Read-EnvValue (Join-Path $ProjectRoot ".env") "DATABASE_URL"
+}
+if ([string]::IsNullOrWhiteSpace($LauncherDatabaseUrl)) {
+  $LauncherDatabaseUrl = "postgresql://postgres@localhost:5432/docucapture"
+}
+
+if (-not $LauncherScannerHostPort) {
+  $LauncherScannerHostPort = 9803
+}
+
+if ([string]::IsNullOrWhiteSpace($LauncherScannerHostUrl)) {
+  $LauncherScannerHostUrl = "http://localhost:$LauncherScannerHostPort"
+}
+
+if (-not $LauncherAppPort) {
+  $LauncherAppPort = 5003
+}
+
+if ([string]::IsNullOrWhiteSpace($LauncherTwainDevice)) {
+  $LauncherTwainDevice = "SHARP MFP TWAIN K"
+}
+
+if ([string]::IsNullOrWhiteSpace($LauncherScannerScanCommand)) {
+  $LauncherScannerScanCommand = '"C:\Program Files\NAPS2\NAPS2.Console.exe" -o "{output}" --noprofile --driver twain --device "{scanner}" --source {source} --dpi {dpi} --pagesize {paperSize} --bitdepth {colorMode} -f -v'
 }
 
 function Test-PortListening([int]$Port) {
