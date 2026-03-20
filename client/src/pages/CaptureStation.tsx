@@ -1,15 +1,13 @@
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Printer,
   Settings,
-  Save,
   RefreshCcw,
   FileText,
   ZoomIn,
   ZoomOut,
   Trash2,
-  Copy,
   CheckSquare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -32,21 +30,30 @@ interface ScannedPage {
   pageNumber: number;
 }
 
+interface CapturedJob {
+  id: string;
+  fileName: string;
+  pageCount: number;
+  createdAt: string;
+}
+
 export default function CaptureStation() {
   const queryClient = useQueryClient();
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState(0);
   const [pages, setPages] = useState<ScannedPage[]>([]);
   const [activePageId, setActivePageId] = useState<string | null>(null);
+  const [capturedJobs, setCapturedJobs] = useState<CapturedJob[]>([]);
+  const [activeCapturedJobId, setActiveCapturedJobId] = useState<string | null>(null);
+  const [activeCapturedPage, setActiveCapturedPage] = useState(1);
+  const [selectedCapturedJobIds, setSelectedCapturedJobIds] = useState<string[]>([]);
+  const [zoomPercent, setZoomPercent] = useState(100);
 
-  const [dpi, setDpi] = useState("300");
-  const [colorMode, setColorMode] = useState("color");
+  const [dpi, setDpi] = useState("600");
+  const [colorMode, setColorMode] = useState("bw");
   const [duplex, setDuplex] = useState(false);
   const [paperSize, setPaperSize] = useState("letter");
   const [source, setSource] = useState("feeder");
-
-  const [barcodeDetected, setBarcodeDetected] = useState(false);
-  const [detectedBarcode, setDetectedBarcode] = useState("B7492");
 
   const { data: scanners = [] } = useQuery({
     queryKey: ["/api/scanners"],
@@ -62,96 +69,102 @@ export default function CaptureStation() {
     queryKey: ["/api/settings/next-seq"],
     queryFn: () => apiRequest("GET", "/api/settings/next-seq"),
   });
+  const { data: scannerStatus } = useQuery({
+    queryKey: ["/api/scanner/status"],
+    queryFn: () => apiRequest("GET", "/api/scanner/status"),
+  });
 
   const nextSeq = seqData?.nextSeq ?? 1;
-  const currentFileName = barcodeDetected ? detectedBarcode : `SCAN_${nextSeq.toString().padStart(4, "0")}`;
+  const currentFileName = `no-code-${nextSeq.toString().padStart(2, "0")} (or Bxxxx)`;
   const savePath = settings?.savePath ?? "f:\\scan-images\\";
 
   const defaultScanner = scanners.find((s: any) => s.isDefault) ?? scanners[0];
   const scannerDisplay = defaultScanner ? `${defaultScanner.name} (${defaultScanner.ip})` : "No scanner configured";
 
   const handleScan = () => {
+    if (!scannerStatus?.ready) {
+      toast({
+        title: "Scanner Not Ready",
+        description: scannerStatus?.message || "Configure TWAIN_SCAN_COMMAND before starting real capture.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsScanning(true);
     setScanProgress(0);
     const interval = setInterval(() => {
-      setScanProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-
-          const canvas = document.createElement("canvas");
-          canvas.width = 612;
-          canvas.height = 792;
-          const ctx = canvas.getContext("2d")!;
-          ctx.fillStyle = "#ffffff";
-          ctx.fillRect(0, 0, 612, 792);
-          ctx.fillStyle = "#333333";
-          ctx.font = "20px sans-serif";
-          ctx.fillText(`Scanned Page ${pages.length + 1}`, 50, 100);
-          ctx.font = "14px sans-serif";
-          ctx.fillStyle = "#666666";
-          ctx.fillText(`Scanner: ${scannerDisplay}`, 50, 140);
-          ctx.fillText(`DPI: ${dpi} | Color: ${colorMode} | Duplex: ${duplex ? "Yes" : "No"}`, 50, 170);
-          ctx.fillText(`Paper: ${paperSize} | Source: ${source}`, 50, 200);
-          ctx.fillText(`Date: ${new Date().toLocaleString()}`, 50, 240);
-          if (barcodeDetected) {
-            ctx.font = "bold 24px monospace";
-            ctx.fillStyle = "#000000";
-            ctx.fillText(`||||| ${detectedBarcode} |||||`, 50, 320);
-          }
-
-          canvas.toBlob((blob) => {
-            if (!blob) return;
-            const dataUrl = canvas.toDataURL("image/png");
-            const newId = Math.random().toString(36).substring(7);
-            const newPage: ScannedPage = {
-              id: newId,
-              dataUrl,
-              blob,
-              selected: true,
-              pageNumber: pages.length + 1,
-            };
-            setPages((current) => [...current, newPage]);
-            setActivePageId(newId);
-            setIsScanning(false);
-            toast({ title: "Scan Complete", description: `Captured page ${pages.length + 1}` });
-          }, "image/png");
-
-          return 100;
-        }
-        return prev + 15;
-      });
+      setScanProgress((prev) => (prev >= 90 ? 90 : prev + 10));
     }, 200);
+
+    apiRequest("POST", "/api/scan/real", {
+      barcodeValue: null,
+      scannerName: defaultScanner?.name ?? scannerStatus?.scannerName ?? "Sharp MX-M503N",
+      dpi,
+      colorMode,
+      duplex,
+      paperSize,
+      source,
+    })
+      .then((result) => {
+        clearInterval(interval);
+        setScanProgress(100);
+        setPages([]);
+        setActivePageId(null);
+        setSelectedCapturedJobIds([]);
+        const jobs = Array.isArray(result?.jobs) ? result.jobs : [result];
+        setCapturedJobs(jobs);
+        setActiveCapturedJobId(jobs.length > 0 ? jobs[0].id : null);
+        setActiveCapturedPage(1);
+        queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/settings/next-seq"] });
+        if (jobs.length === 1) {
+          toast({ title: "Scan Complete", description: `${jobs[0].fileName} saved to ${savePath}` });
+        } else {
+          toast({ title: "Scan Complete", description: `${jobs.length} documents saved to ${savePath}` });
+        }
+      })
+      .catch((err: Error) => {
+        clearInterval(interval);
+        toast({ title: "Scan Failed", description: err.message, variant: "destructive" });
+      })
+      .finally(() => {
+        setIsScanning(false);
+        setScanProgress(0);
+      });
   };
 
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      const selectedPages = pages.filter((p) => p.selected);
-      const formData = new FormData();
-      selectedPages.forEach((page, idx) => {
-        formData.append("pages", page.blob, `page_${idx}.png`);
-      });
-      if (barcodeDetected) formData.append("barcodeValue", detectedBarcode);
-      formData.append("scannerName", defaultScanner?.name ?? "Sharp MX-M503N");
-      formData.append("dpi", dpi);
-      formData.append("colorMode", colorMode);
-      formData.append("duplex", duplex.toString());
-      return apiRequest("POST", "/api/scan", formData);
+  const deleteCapturedMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      for (const id of ids) {
+        await apiRequest("DELETE", `/api/jobs/${id}`);
+      }
     },
-    onSuccess: (job) => {
-      toast({ title: "PDF Saved", description: `${job.fileName} saved to ${savePath}` });
+    onSuccess: () => {
+      const remaining = capturedJobs.filter((job) => !selectedCapturedJobIds.includes(job.id));
+      setCapturedJobs(remaining);
+      setSelectedCapturedJobIds([]);
+      if (activeCapturedJobId && !remaining.some((job) => job.id === activeCapturedJobId)) {
+        setActiveCapturedJobId(remaining.length > 0 ? remaining[0].id : null);
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/settings/next-seq"] });
-      setPages([]);
-      setActivePageId(null);
+      toast({ title: "Documents Deleted" });
     },
     onError: (err: Error) => {
-      toast({ title: "Save Failed", description: err.message, variant: "destructive" });
+      toast({ title: "Delete Failed", description: err.message, variant: "destructive" });
     },
   });
 
   const handleSelectAll = () => {
-    const allSelected = pages.every((p) => p.selected);
-    setPages(pages.map((p) => ({ ...p, selected: !allSelected })));
+    if (pages.length > 0) {
+      const allSelected = pages.every((p) => p.selected);
+      setPages(pages.map((p) => ({ ...p, selected: !allSelected })));
+      return;
+    }
+    if (capturedJobs.length > 0) {
+      const allSelected = selectedCapturedJobIds.length === capturedJobs.length;
+      setSelectedCapturedJobIds(allSelected ? [] : capturedJobs.map((job) => job.id));
+    }
   };
 
   const toggleSelection = (id: string) => {
@@ -159,6 +172,10 @@ export default function CaptureStation() {
   };
 
   const handleDeleteSelected = () => {
+    if (pages.length === 0 && selectedCapturedJobIds.length > 0) {
+      deleteCapturedMutation.mutate(selectedCapturedJobIds);
+      return;
+    }
     const remaining = pages.filter((p) => !p.selected);
     const updated = remaining.map((p, idx) => ({ ...p, pageNumber: idx + 1 }));
     setPages(updated);
@@ -168,16 +185,13 @@ export default function CaptureStation() {
     toast({ title: "Pages Deleted", description: "Removed selected pages." });
   };
 
-  const handleSavePDF = () => {
-    const selectedCount = pages.filter((p) => p.selected).length;
-    if (selectedCount === 0) {
-      toast({ title: "No pages selected", description: "Please select at least one page to save.", variant: "destructive" });
-      return;
-    }
-    saveMutation.mutate();
-  };
-
   const activePage = pages.find((p) => p.id === activePageId);
+  const activeCapturedJob = capturedJobs.find((job) => job.id === activeCapturedJobId) || null;
+  const canZoom = Boolean(activePage || activeCapturedJob);
+  const selectCapturedJob = (id: string) => {
+    setActiveCapturedJobId(id);
+    setActiveCapturedPage(1);
+  };
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
@@ -196,8 +210,12 @@ export default function CaptureStation() {
             {scannerDisplay}
           </Badge>
           <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-            <span className="flex w-2 h-2 rounded-full bg-green-500"></span>
-            <span>Connected</span>
+            <span
+              className={`flex w-2 h-2 rounded-full ${
+                scannerStatus?.ready ? "bg-green-500" : "bg-red-500"
+              }`}
+            ></span>
+            <span>{scannerStatus?.ready ? "Connected" : "Not Connected"}</span>
           </div>
         </div>
       </header>
@@ -210,6 +228,17 @@ export default function CaptureStation() {
                 <div className="flex items-center space-x-2">
                   <Settings className="w-5 h-5 text-muted-foreground" />
                   <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Scan Profile</h2>
+                </div>
+                <div className="rounded-lg border bg-muted/20 px-3 py-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Scanner Status</span>
+                    <span className={`text-xs font-semibold ${scannerStatus?.ready ? "text-green-600" : "text-red-600"}`}>
+                      {scannerStatus?.ready ? "Ready" : "Not Ready"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {scannerStatus?.message || "Checking scanner status..."}
+                  </p>
                 </div>
                 <div className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
@@ -273,7 +302,7 @@ export default function CaptureStation() {
                   size="lg"
                   className="w-full h-14 text-lg font-medium shadow-md transition-all active:scale-[0.98]"
                   onClick={handleScan}
-                  disabled={isScanning}
+                  disabled={isScanning || !scannerStatus?.ready}
                   data-testid="button-scan"
                 >
                   {isScanning ? (
@@ -298,34 +327,18 @@ export default function CaptureStation() {
               <div className="space-y-4">
                 <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Output Settings</h2>
                 <div className="space-y-4 bg-muted/30 p-3 rounded-lg border border-border">
-                  <div className="flex items-center justify-between pb-2 border-b border-border">
-                    <Label htmlFor="barcode-detect" className="cursor-pointer font-semibold text-primary">3of9 Barcode Detected</Label>
-                    <Switch id="barcode-detect" checked={barcodeDetected} onCheckedChange={setBarcodeDetected} />
-                  </div>
-                  {barcodeDetected && (
-                    <div className="space-y-2">
-                      <Label htmlFor="detected-barcode" className="text-xs">Barcode Value</Label>
-                      <Input id="detected-barcode" value={detectedBarcode} onChange={(e) => setDetectedBarcode(e.target.value)} className="h-8 font-mono text-sm" />
-                    </div>
-                  )}
                   <div className="space-y-2">
                     <Label>Target Directory</Label>
                     <Input value={savePath} readOnly className="bg-slate-100 text-slate-500 font-mono text-xs" />
                   </div>
-                  <div className="pt-2 text-xs text-muted-foreground flex items-center space-x-1">
+                  <div className="pt-1 text-xs text-muted-foreground flex items-center space-x-1">
                     <FileText className="w-3 h-3" />
                     <span>Output File: <strong>{currentFileName}.pdf</strong></span>
                   </div>
-                  <Button
-                    variant="default"
-                    className="w-full bg-slate-800 hover:bg-slate-900 text-white mt-2"
-                    onClick={handleSavePDF}
-                    disabled={pages.length === 0 || saveMutation.isPending}
-                    data-testid="button-save-pdf"
-                  >
-                    <Save className="w-4 h-4 mr-2" />
-                    {saveMutation.isPending ? "Saving..." : "Save to Local Drive"}
-                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Auto-save is enabled. Documents are saved immediately after scan.
+                    Barcode naming uses Code39 `Bxxxx`; fallback is `no-code-xx.pdf`.
+                  </p>
                 </div>
               </div>
             </div>
@@ -335,21 +348,43 @@ export default function CaptureStation() {
         <section className="flex-1 flex flex-col bg-slate-100 relative shadow-[inset_0_2px_10px_rgba(0,0,0,0.05)]">
           <div className="flex items-center justify-between p-3 bg-white/80 backdrop-blur-md border-b border-border shadow-sm absolute top-0 left-0 right-0 z-10">
             <div className="flex items-center space-x-2">
-              <Button variant="ghost" size="sm" onClick={handleSelectAll} disabled={pages.length === 0}>
+              <Button variant="ghost" size="sm" onClick={handleSelectAll} disabled={pages.length === 0 && capturedJobs.length === 0}>
                 <CheckSquare className="w-4 h-4 mr-2" />Select All
               </Button>
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive hover:bg-destructive/10" onClick={handleDeleteSelected} disabled={pages.length === 0 || !pages.some((p) => p.selected)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={handleDeleteSelected}
+                disabled={(pages.length > 0 && !pages.some((p) => p.selected)) || (pages.length === 0 && selectedCapturedJobIds.length === 0)}
+              >
                 <Trash2 className="w-4 h-4 mr-2" />Delete Selected
               </Button>
             </div>
             <div className="flex items-center space-x-2">
-              <Button variant="ghost" size="icon" disabled={!activePage}><ZoomOut className="w-4 h-4" /></Button>
-              <span className="text-sm font-medium w-12 text-center">100%</span>
-              <Button variant="ghost" size="icon" disabled={!activePage}><ZoomIn className="w-4 h-4" /></Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setZoomPercent((z) => Math.max(25, z - 25))}
+                disabled={!canZoom || zoomPercent <= 25}
+              >
+                <ZoomOut className="w-4 h-4" />
+              </Button>
+              <span className="text-sm font-medium w-20 text-center">
+                {zoomPercent}%
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setZoomPercent((z) => Math.min(300, z + 25))}
+                disabled={!canZoom || zoomPercent >= 300}
+              >
+                <ZoomIn className="w-4 h-4" />
+              </Button>
             </div>
           </div>
-          <div className="flex-1 overflow-auto flex items-center justify-center p-8 pt-20 pb-40">
-            {pages.length === 0 ? (
+          <div className="flex-1 overflow-y-auto overflow-x-hidden flex items-start justify-center p-8 pt-20 pb-40">
+            {pages.length === 0 && capturedJobs.length === 0 ? (
               <div className="text-center space-y-4 text-muted-foreground max-w-md">
                 <div className="w-24 h-24 mx-auto bg-slate-200 rounded-full flex items-center justify-center">
                   <FileText className="w-12 h-12 text-slate-400" />
@@ -357,10 +392,50 @@ export default function CaptureStation() {
                 <h3 className="text-xl font-medium text-slate-600">No Documents Captured</h3>
                 <p className="text-sm">Click "Capture Document" to start scanning from the connected workstation device.</p>
               </div>
-            ) : activePage ? (
-              <div className="relative group transition-all duration-300 shadow-[0_10px_40px_rgba(0,0,0,0.1)] hover:shadow-[0_15px_50px_rgba(0,0,0,0.15)] bg-white max-w-3xl w-full mx-auto" style={{ aspectRatio: "3/4" }}>
-                <img src={activePage.dataUrl} alt={`Page ${activePage.pageNumber}`} className="w-full h-full object-contain pointer-events-none" />
+            ) : pages.length > 0 && activePage ? (
+              <div className="relative group transition-all duration-300 shadow-[0_10px_40px_rgba(0,0,0,0.1)] hover:shadow-[0_15px_50px_rgba(0,0,0,0.15)] bg-white w-full mx-auto overflow-y-auto overflow-x-hidden flex justify-center items-start">
+                <img
+                  src={activePage.dataUrl}
+                  alt={`Page ${activePage.pageNumber}`}
+                  className="h-auto object-contain pointer-events-none max-w-none"
+                  style={{ width: `${zoomPercent}%` }}
+                />
                 <div className="absolute top-4 right-4 bg-black/60 text-white px-3 py-1 rounded-full text-xs font-medium backdrop-blur-md">Page {activePage.pageNumber}</div>
+              </div>
+            ) : activeCapturedJob ? (
+              <div className="w-full h-full bg-white rounded-lg border shadow-sm p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-semibold">{activeCapturedJob.fileName}</h3>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setActiveCapturedPage((p) => Math.max(1, p - 1))}
+                      disabled={activeCapturedPage <= 1}
+                    >
+                      Prev
+                    </Button>
+                    <span className="text-sm text-muted-foreground">
+                      {activeCapturedPage} / {activeCapturedJob.pageCount}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setActiveCapturedPage((p) => Math.min(activeCapturedJob.pageCount, p + 1))}
+                      disabled={activeCapturedPage >= activeCapturedJob.pageCount}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+                <div className="w-full h-[calc(100%-2.5rem)] border rounded bg-slate-50 overflow-y-auto overflow-x-hidden flex items-start justify-center">
+                  <img
+                    src={`/api/jobs/${activeCapturedJob.id}/page/${activeCapturedPage}`}
+                    alt={`${activeCapturedJob.fileName} page ${activeCapturedPage}`}
+                    className="h-auto object-contain max-w-none"
+                    style={{ width: `${zoomPercent}%` }}
+                  />
+                </div>
               </div>
             ) : null}
           </div>
@@ -368,30 +443,88 @@ export default function CaptureStation() {
 
         <aside className="w-64 flex flex-col border-l border-border bg-card z-10 flex-shrink-0">
           <div className="p-4 border-b border-border bg-muted/30">
-            <h2 className="font-semibold text-sm">Document Pages ({pages.length})</h2>
-            <p className="text-xs text-muted-foreground">{pages.filter((p) => p.selected).length} selected</p>
+            <h2 className="font-semibold text-sm">
+              {pages.length > 0 ? `Document Pages (${pages.length})` : `Captured Documents (${capturedJobs.length})`}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {pages.length > 0
+                ? `${pages.filter((p) => p.selected).length} selected`
+                : `${selectedCapturedJobIds.length} selected`}
+            </p>
           </div>
           <ScrollArea className="flex-1 p-4">
-            <div className="grid grid-cols-2 gap-4 pb-20">
-              {pages.map((page) => (
-                <div
-                  key={page.id}
-                  className={`relative group cursor-pointer rounded-md overflow-hidden border-2 transition-all ${page.id === activePageId ? "ring-2 ring-primary border-transparent" : "border-transparent hover:border-primary/50"} ${page.selected ? "bg-primary/5" : "bg-muted/30"}`}
-                  onClick={() => setActivePageId(page.id)}
-                >
-                  <div className="aspect-[3/4] p-1">
-                    <img src={page.dataUrl} className="w-full h-full object-cover rounded-sm shadow-sm bg-white" alt={`Thumbnail ${page.pageNumber}`} />
-                  </div>
+            {pages.length > 0 ? (
+              <div className="grid grid-cols-2 gap-4 pb-20">
+                {pages.map((page) => (
                   <div
-                    className={`absolute top-2 left-2 w-5 h-5 rounded border bg-white/90 backdrop-blur flex items-center justify-center ${page.selected ? "border-primary bg-primary text-white" : "border-slate-300 opacity-0 group-hover:opacity-100"} transition-opacity`}
-                    onClick={(e) => { e.stopPropagation(); toggleSelection(page.id); }}
+                    key={page.id}
+                    className={`relative group cursor-pointer rounded-md overflow-hidden border-2 transition-all ${page.id === activePageId ? "ring-2 ring-primary border-transparent" : "border-transparent hover:border-primary/50"} ${page.selected ? "bg-primary/5" : "bg-muted/30"}`}
+                    onClick={() => setActivePageId(page.id)}
                   >
-                    {page.selected && <CheckSquare className="w-3 h-3" />}
+                    <div className="aspect-[3/4] p-1">
+                      <img src={page.dataUrl} className="w-full h-full object-cover rounded-sm shadow-sm bg-white" alt={`Thumbnail ${page.pageNumber}`} />
+                    </div>
+                    <div
+                      className={`absolute top-2 left-2 w-5 h-5 rounded border bg-white/90 backdrop-blur flex items-center justify-center ${page.selected ? "border-primary bg-primary text-white" : "border-slate-300 opacity-0 group-hover:opacity-100"} transition-opacity`}
+                      onClick={(e) => { e.stopPropagation(); toggleSelection(page.id); }}
+                    >
+                      {page.selected && <CheckSquare className="w-3 h-3" />}
+                    </div>
+                    <div className="absolute bottom-0 inset-x-0 bg-black/50 text-white text-[10px] text-center py-1 font-medium backdrop-blur-sm">{page.pageNumber}</div>
                   </div>
-                  <div className="absolute bottom-0 inset-x-0 bg-black/50 text-white text-[10px] text-center py-1 font-medium backdrop-blur-sm">{page.pageNumber}</div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-2 pb-20">
+                {capturedJobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className={`rounded-md border p-2 text-xs cursor-pointer transition-colors ${
+                      activeCapturedJobId === job.id
+                        ? "bg-primary/10 border-primary shadow-sm"
+                        : "bg-muted/30 hover:bg-muted/50"
+                    }`}
+                    onClick={() => selectCapturedJob(job.id)}
+                  >
+                    <div className="aspect-[4/3] mb-2 rounded border overflow-hidden bg-white flex items-center justify-center">
+                      <img
+                        src={`/api/jobs/${job.id}/page/1?thumb=1`}
+                        alt={`${job.fileName} thumbnail`}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${job.fileName}`}
+                        checked={selectedCapturedJobIds.includes(job.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          setSelectedCapturedJobIds((current) =>
+                            current.includes(job.id)
+                              ? current.filter((id) => id !== job.id)
+                              : [...current, job.id],
+                          );
+                        }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{job.fileName}</div>
+                        <div className="mt-1 flex items-center gap-1">
+                          <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                            {job.pageCount} page{job.pageCount === 1 ? "" : "s"}
+                          </Badge>
+                          {activeCapturedJobId === job.id && (
+                            <Badge variant="outline" className="text-[10px] px-1 py-0">
+                              Viewing
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </ScrollArea>
         </aside>
       </main>
