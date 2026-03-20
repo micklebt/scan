@@ -50,3 +50,29 @@ try {
 }
 
 Write-Output "Built MSI: $msiPath"
+
+if (-not (Test-Path $msiPath)) {
+  throw "MSI output missing after WiX build."
+}
+
+$desktop = [Environment]::GetFolderPath("Desktop")
+if (-not $desktop -or -not (Test-Path $desktop)) {
+  $desktop = Join-Path $env:USERPROFILE "Desktop"
+}
+$desktopMsi = Join-Path $desktop "DocuCapture-Setup.msi"
+Copy-Item -LiteralPath $msiPath -Destination $desktopMsi -Force
+
+$readme = Join-Path $desktop "DocuCapture-INSTALL.txt"
+@(
+  "DocuCapture (this build)",
+  "",
+  "1. Double-click: DocuCapture-Setup.msi  (same folder as this file)",
+  "2. After install: Start Menu -> DocuCapture",
+  "3. Config file: C:\Program Files\DocuCapture\docucapture.env",
+  "",
+  "Project copy (for developers):",
+  "  $msiPath"
+) | Set-Content -LiteralPath $readme -Encoding UTF8
+
+Write-Output "Copied to Desktop: $desktopMsi"
+Write-Output "Instructions: $readme"

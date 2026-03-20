@@ -15,6 +15,13 @@ npm install
 npm run build:msi
 ```
 
+After a successful build:
+- `release\DocuCapture-Setup.msi` (under this repo)
+- **Same MSI is copied to your Windows Desktop** as `DocuCapture-Setup.msi`
+- `DocuCapture-INSTALL.txt` on the Desktop lists those paths
+
+Install by double-clicking the Desktop MSI (no `cd` or path hunting).
+
 ## Installed PC (runtime)
 - Node.js LTS on PATH (for `node` used by `Installed-Launch.ps1`)
 - PowerShell 7 (`pwsh`) and Windows PowerShell path fallbacks in `Installed-Launch.cmd`
