@@ -22,6 +22,15 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import { apiRequest } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface ScannedPage {
   id: string;
@@ -36,6 +45,46 @@ interface CapturedJob {
   fileName: string;
   pageCount: number;
   createdAt: string;
+  docDate?: string | null;
+  customerName?: string | null;
+  accountNumber?: string | null;
+  totalAmount?: string | null;
+  notes?: string | null;
+  metadataJson?: Record<string, unknown> | null;
+}
+
+type MetadataDraft = {
+  docDate: string;
+  customerName: string;
+  accountNumber: string;
+  totalAmount: string;
+  notes: string;
+};
+
+type MetadataJsonShape = Partial<MetadataDraft> & { approved?: boolean };
+
+function parseMetadataJson(raw: unknown): MetadataJsonShape {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object") return parsed as MetadataJsonShape;
+      return {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof raw === "object") return raw as MetadataJsonShape;
+  return {};
+}
+
+function firstNonEmpty(...values: Array<unknown>): string {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return "";
 }
 
 export default function CaptureStation() {
@@ -49,6 +98,15 @@ export default function CaptureStation() {
   const [activeCapturedPage, setActiveCapturedPage] = useState(1);
   const [selectedCapturedJobIds, setSelectedCapturedJobIds] = useState<string[]>([]);
   const [zoomPercent, setZoomPercent] = useState(100);
+  const [metadataQueue, setMetadataQueue] = useState<CapturedJob[]>([]);
+  const [activeMetadataJob, setActiveMetadataJob] = useState<CapturedJob | null>(null);
+  const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>({
+    docDate: "",
+    customerName: "",
+    accountNumber: "",
+    totalAmount: "",
+    notes: "",
+  });
 
   const [dpi, setDpi] = useState("600");
   const [colorMode, setColorMode] = useState("bw");
@@ -81,6 +139,34 @@ export default function CaptureStation() {
 
   const defaultScanner = scanners.find((s: any) => s.isDefault) ?? scanners[0];
   const scannerDisplay = defaultScanner ? `${defaultScanner.name} (${defaultScanner.ip})` : "No scanner configured";
+
+  const loadMetadataModal = (job: CapturedJob | null) => {
+    setActiveMetadataJob(job);
+    if (!job) return;
+    const meta = parseMetadataJson(job.metadataJson);
+    const baseName = (job.fileName || "").replace(/\.pdf$/i, "");
+    setMetadataDraft({
+      docDate: firstNonEmpty(job.docDate, meta.docDate),
+      customerName: firstNonEmpty(job.customerName, meta.customerName, (meta as Record<string, unknown>).sourceName),
+      accountNumber: firstNonEmpty(job.accountNumber, meta.accountNumber, baseName),
+      totalAmount: firstNonEmpty(job.totalAmount, meta.totalAmount),
+      notes: firstNonEmpty(job.notes, meta.notes),
+    });
+  };
+
+  const openMetadataModalForJob = async (job: CapturedJob | null) => {
+    if (!job) {
+      loadMetadataModal(null);
+      return;
+    }
+    try {
+      const fresh = await apiRequest("GET", `/api/jobs/${job.id}`);
+      const merged = { ...job, ...fresh } as CapturedJob;
+      loadMetadataModal(merged);
+    } catch {
+      loadMetadataModal(job);
+    }
+  };
 
   const handleScan = () => {
     if (!scannerStatus?.ready) {
@@ -117,6 +203,8 @@ export default function CaptureStation() {
         setCapturedJobs(jobs);
         setActiveCapturedJobId(jobs.length > 0 ? jobs[0].id : null);
         setActiveCapturedPage(1);
+        setMetadataQueue(jobs);
+        void openMetadataModalForJob(jobs.length > 0 ? jobs[0] : null);
         queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
         queryClient.invalidateQueries({ queryKey: ["/api/settings/next-seq"] });
         if (jobs.length === 1) {
@@ -133,6 +221,35 @@ export default function CaptureStation() {
         setIsScanning(false);
         setScanProgress(0);
       });
+  };
+
+  const saveMetadataMutation = useMutation({
+    mutationFn: async (payload: { id: string; approved: boolean; data: MetadataDraft }) => {
+      return apiRequest("PATCH", `/api/jobs/${payload.id}/metadata`, {
+        ...payload.data,
+        approved: payload.approved,
+      });
+    },
+    onSuccess: (updated: CapturedJob) => {
+      setCapturedJobs((current) => current.map((job) => (job.id === updated.id ? { ...job, ...updated } : job)));
+      setMetadataQueue((current) => {
+        const remaining = current.slice(1);
+        void openMetadataModalForJob(remaining.length > 0 ? remaining[0] : null);
+        return remaining;
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Metadata Save Failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const moveToNextMetadataJob = () => {
+    setMetadataQueue((current) => {
+      const remaining = current.slice(1);
+      void openMetadataModalForJob(remaining.length > 0 ? remaining[0] : null);
+      return remaining;
+    });
   };
 
   const deleteCapturedMutation = useMutation({
@@ -196,6 +313,53 @@ export default function CaptureStation() {
 
   return (
     <div className="flex flex-col h-screen bg-background overflow-hidden">
+      <Dialog open={Boolean(activeMetadataJob)} onOpenChange={() => {}}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Metadata for {activeMetadataJob?.fileName}</DialogTitle>
+            <DialogDescription>
+              Edit JSON values for hard-coded keys, then choose Save or Approve and Save.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label>docDate</Label>
+              <Input value={metadataDraft.docDate} onChange={(e) => setMetadataDraft((p) => ({ ...p, docDate: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>customerName</Label>
+              <Input value={metadataDraft.customerName} onChange={(e) => setMetadataDraft((p) => ({ ...p, customerName: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>accountNumber</Label>
+              <Input value={metadataDraft.accountNumber} onChange={(e) => setMetadataDraft((p) => ({ ...p, accountNumber: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>totalAmount</Label>
+              <Input value={metadataDraft.totalAmount} onChange={(e) => setMetadataDraft((p) => ({ ...p, totalAmount: e.target.value }))} />
+            </div>
+            <div className="space-y-1">
+              <Label>notes</Label>
+              <Textarea value={metadataDraft.notes} onChange={(e) => setMetadataDraft((p) => ({ ...p, notes: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={moveToNextMetadataJob}
+              disabled={!activeMetadataJob || saveMetadataMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => activeMetadataJob && saveMetadataMutation.mutate({ id: activeMetadataJob.id, approved: true, data: metadataDraft })}
+              disabled={!activeMetadataJob || saveMetadataMutation.isPending || !metadataDraft.notes.trim()}
+            >
+              Approve and Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <header className="flex items-center justify-between px-6 py-3 bg-white border-b border-border shadow-sm z-10">
         <div className="flex items-center space-x-3">
           <div className="p-2 bg-primary/10 rounded-lg text-primary">

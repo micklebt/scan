@@ -10,9 +10,16 @@ export async function apiRequest(method: string, url: string, body?: any) {
   }
   const res = await fetch(url, options);
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }));
+    const contentType = res.headers.get("content-type") || "";
+    const err = contentType.includes("application/json")
+      ? await res.json().catch(() => ({ message: res.statusText }))
+      : { message: (await res.text().catch(() => "")) || res.statusText };
     throw new Error(err.message || "Request failed");
   }
   if (res.status === 204) return null;
-  return res.json();
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return res.json();
+  }
+  return res.text().catch(() => null);
 }

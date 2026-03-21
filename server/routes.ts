@@ -22,6 +22,34 @@ const upload = multer({ dest: UPLOAD_DIR });
 const execAsync = promisify(exec);
 const CODE39_B_PATTERN = /\bB\d{4}\b/i;
 
+function resolveServerScript(scriptName: string) {
+  const direct = path.join(process.cwd(), scriptName);
+  if (fs.existsSync(direct)) return direct;
+  return path.join(process.cwd(), "server", scriptName);
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        const sliced = text.slice(start, end + 1);
+        const parsed = JSON.parse(sliced);
+        return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
 function isHelperConfigured() {
   return Boolean(process.env.TWAIN_HELPER_WATCH_DIR);
 }
@@ -73,10 +101,60 @@ function ensureSaveToTargetDirectory(sourcePath: string, fileName: string, saveP
 }
 
 type BarcodeMarker = { page: number; code: string };
+type ExtractedMetadata = {
+  docDate: string | null;
+  customerName: string | null;
+  accountNumber: string | null;
+  totalAmount: string | null;
+  notes: string | null;
+  approved?: boolean;
+};
+
+function summarizeNotes(notes: string | null | undefined): string {
+  if (!notes) return "";
+  const cleaned = notes.replace(/[^\w\s/$.-]/g, " ");
+  const lower = cleaned.toLowerCase();
+  const interestingPatterns: Array<{ label: string; regex: RegExp }> = [
+    { label: "invoice", regex: /\binvoice\b/i },
+    { label: "statement", regex: /\bstatement\b/i },
+    { label: "bill", regex: /\bbill\b/i },
+    { label: "payment due", regex: /\bpayment\s+due\b/i },
+    { label: "amount due", regex: /\bamount\s+due\b/i },
+    { label: "balance due", regex: /\bbalance\s+due\b/i },
+    { label: "loan", regex: /\bloan\b/i },
+    { label: "account", regex: /\baccount\b/i },
+  ];
+
+  const selected: string[] = [];
+  for (const item of interestingPatterns) {
+    if (item.regex.test(lower)) selected.push(item.label);
+    if (selected.length >= 3) break;
+  }
+
+  const dateMatch = lower.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/);
+  if (dateMatch) selected.push(dateMatch[0]);
+
+  const amountMatches = Array.from(lower.matchAll(/\$?\s*([0-9][0-9,]*\.[0-9]{2})/g)).map((m) => m[1]);
+  if (amountMatches.length > 0) {
+    const normalized = amountMatches.map((v) => ({ raw: v, num: Number(v.replace(/,/g, "")) }));
+    normalized.sort((a, b) => b.num - a.num);
+    selected.push(`$${normalized[0].raw}`);
+  }
+
+  if (selected.length === 0) {
+    const words = cleaned
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length > 2);
+    return words.slice(0, 6).join(" ");
+  }
+
+  return selected.slice(0, 6).join(" ");
+}
 
 async function detectCode39FromPdf(pdfPath: string) {
   const configuredTemplate = process.env.BARCODE_READ_COMMAND;
-  const defaultScript = path.join(process.cwd(), "server", "read-code39.py");
+  const defaultScript = resolveServerScript("read-code39.py");
   const fallbackTemplate = `python "${defaultScript}" "{input}"`;
   const commandTemplate = configuredTemplate || fallbackTemplate;
 
@@ -95,7 +173,7 @@ async function detectCode39FromPdf(pdfPath: string) {
 }
 
 async function detectAllCode39FromPdf(pdfPath: string): Promise<BarcodeMarker[]> {
-  const defaultScript = path.join(process.cwd(), "server", "read-code39.py");
+  const defaultScript = resolveServerScript("read-code39.py");
   const command = `python "${defaultScript}" "${pdfPath}" --all`;
   try {
     const { stdout } = await execAsync(command, {
@@ -111,6 +189,87 @@ async function detectAllCode39FromPdf(pdfPath: string): Promise<BarcodeMarker[]>
   } catch {
     return [];
   }
+}
+
+async function detectMetadataFromPdf(pdfPath: string): Promise<ExtractedMetadata> {
+  const defaultScript = resolveServerScript("read-key-fields.py");
+  const fallbackTemplate = `python "${defaultScript}" "{input}"`;
+  const commandTemplate = process.env.OCR_READ_COMMAND || fallbackTemplate;
+  const empty: ExtractedMetadata = {
+    docDate: null,
+    customerName: null,
+    accountNumber: null,
+    totalAmount: null,
+    notes: null,
+  };
+
+  try {
+    const command = commandTemplate.replaceAll("{input}", pdfPath);
+    const { stdout, stderr } = await execAsync(command, {
+      windowsHide: true,
+      maxBuffer: 1024 * 1024 * 10,
+    });
+    const parsed = parseJsonObject(stdout || "") || parseJsonObject(stderr || "");
+    if (!parsed) {
+      console.warn("[ocr] metadata parser returned non-JSON output");
+      return empty;
+    }
+    return {
+      docDate: typeof parsed.docDate === "string" ? parsed.docDate : null,
+      customerName: typeof parsed.customerName === "string" ? parsed.customerName : null,
+      accountNumber: typeof parsed.accountNumber === "string" ? parsed.accountNumber : null,
+      totalAmount: typeof parsed.totalAmount === "string" ? parsed.totalAmount : null,
+      notes: typeof parsed.notes === "string" ? parsed.notes : null,
+    };
+  } catch (error) {
+    console.warn("[ocr] metadata extraction failed", error);
+    return empty;
+  }
+}
+
+async function writeWindowsShellProperties(pdfPath: string, metadata: ExtractedMetadata) {
+  try {
+    const bytes = fs.readFileSync(pdfPath);
+    const doc = await PDFDocument.load(bytes);
+    if (metadata.accountNumber) doc.setTitle(metadata.accountNumber);
+    if (metadata.customerName) doc.setAuthor(metadata.customerName);
+    if (metadata.docDate) doc.setSubject(metadata.docDate);
+    const tags: string[] = [];
+    if (metadata.totalAmount) tags.push(`amount:${metadata.totalAmount}`);
+    if (metadata.notes) tags.push(metadata.notes.slice(0, 100));
+    if (tags.length > 0) doc.setKeywords(tags);
+    const out = await doc.save();
+    fs.writeFileSync(pdfPath, out);
+  } catch {
+    return;
+  }
+}
+
+async function upsertDocumentIndexForJob(job: {
+  id: string;
+  fileName: string;
+  filePath: string;
+  barcodeValue: string | null;
+  docDate: string | null;
+  customerName: string | null;
+  accountNumber: string | null;
+  totalAmount: string | null;
+  notes: string | null;
+  metadataJson: unknown;
+}) {
+  if (!job.barcodeValue) return;
+  await storage.upsertDocumentIndex({
+    barcodeValue: job.barcodeValue.toUpperCase(),
+    fileName: job.fileName,
+    filePath: job.filePath,
+    scanJobId: job.id,
+    docDate: job.docDate,
+    customerName: job.customerName,
+    accountNumber: job.accountNumber,
+    totalAmount: job.totalAmount,
+    notes: job.notes,
+    metadataJson: (job.metadataJson ?? null) as any,
+  });
 }
 
 export async function registerRoutes(
@@ -200,10 +359,115 @@ export async function registerRoutes(
     res.json(jobs);
   });
 
+  app.get("/api/index", async (req, res) => {
+    const barcode = String(req.query.barcode || "").trim().toUpperCase();
+    const vendor = String(req.query.vendor || "").trim().toLowerCase();
+    const keywords = String(req.query.keywords || "").trim().toLowerCase();
+    const fromDate = String(req.query.fromDate || "").trim();
+    const toDate = String(req.query.toDate || "").trim();
+
+    let rows = await storage.getDocumentIndex();
+    if (barcode) {
+      rows = rows.filter((row) => (row.barcodeValue || "").toUpperCase().includes(barcode));
+    }
+    if (vendor) {
+      rows = rows.filter((row) => (row.customerName || "").toLowerCase().includes(vendor));
+    }
+    if (fromDate) {
+      rows = rows.filter((row) => !row.docDate || row.docDate >= fromDate);
+    }
+    if (toDate) {
+      rows = rows.filter((row) => !row.docDate || row.docDate <= toDate);
+    }
+    if (keywords) {
+      rows = rows.filter((row) => {
+        const haystack = `${row.notes || ""} ${(row.accountNumber || "")} ${(row.fileName || "")}`.toLowerCase();
+        return haystack.includes(keywords);
+      });
+    }
+
+    const shaped = rows.map((row) => ({
+      ...row,
+      summary: summarizeNotes(row.notes),
+    }));
+    return res.json(shaped);
+  });
+
+  app.get("/api/index/:barcode", async (req, res) => {
+    const row = await storage.getDocumentByBarcode(req.params.barcode);
+    if (!row) return res.status(404).json({ message: "Barcode not found" });
+    res.json(row);
+  });
+
+  app.post("/api/index/rebuild", async (_req, res) => {
+    const jobs = await storage.getScanJobs();
+    const bestByBarcode = new Map<string, typeof jobs[number]>();
+    for (const job of jobs) {
+      if (!job.barcodeValue) continue;
+      const barcode = job.barcodeValue.toUpperCase();
+      const current = bestByBarcode.get(barcode);
+      const score = [job.docDate, job.customerName, job.accountNumber, job.totalAmount, job.notes].filter(Boolean).length;
+      if (!current) {
+        bestByBarcode.set(barcode, job);
+        continue;
+      }
+      const currentScore = [current.docDate, current.customerName, current.accountNumber, current.totalAmount, current.notes].filter(Boolean).length;
+      if (score > currentScore) {
+        bestByBarcode.set(barcode, job);
+      }
+    }
+
+    let count = 0;
+    for (const job of Array.from(bestByBarcode.values())) {
+      await upsertDocumentIndexForJob(job);
+      count += 1;
+    }
+    res.json({ indexed: count });
+  });
+
   app.get("/api/jobs/:id", async (req, res) => {
     const job = await storage.getScanJob(req.params.id);
     if (!job) return res.status(404).json({ message: "Job not found" });
     res.json(job);
+  });
+
+  app.patch("/api/jobs/:id/metadata", async (req, res) => {
+    const job = await storage.getScanJob(req.params.id);
+    if (!job) return res.status(404).json({ message: "Job not found" });
+
+    const payload = req.body || {};
+    const metadata: ExtractedMetadata = {
+      docDate: payload.docDate ? String(payload.docDate) : null,
+      customerName: payload.customerName ? String(payload.customerName) : null,
+      accountNumber: payload.accountNumber ? String(payload.accountNumber) : null,
+      totalAmount: payload.totalAmount ? String(payload.totalAmount) : null,
+      notes: payload.notes ? String(payload.notes) : null,
+      approved: Boolean(payload.approved),
+    };
+    if (!metadata.notes || !metadata.notes.trim()) {
+      return res.status(400).json({ message: "Description is required before saving metadata" });
+    }
+
+    const updated = await storage.updateScanJob(req.params.id, {
+      docDate: metadata.docDate,
+      customerName: metadata.customerName,
+      accountNumber: metadata.accountNumber,
+      totalAmount: metadata.totalAmount,
+      notes: metadata.notes,
+      metadataJson: metadata,
+    });
+    if (!updated) return res.status(404).json({ message: "Job not found" });
+    await upsertDocumentIndexForJob(updated);
+
+    const outputPath = path.join(OUTPUT_DIR, updated.fileName);
+    if (fs.existsSync(outputPath)) {
+      await writeWindowsShellProperties(outputPath, metadata);
+    }
+    if (updated.filePath && fs.existsSync(updated.filePath)) {
+      await writeWindowsShellProperties(updated.filePath, metadata);
+    }
+
+    res.json(updated);
   });
 
   app.delete("/api/jobs/:id", async (req, res) => {
@@ -217,6 +481,27 @@ export async function registerRoutes(
     }
 
     await storage.deleteScanJob(req.params.id);
+    res.status(204).send();
+  });
+
+  app.delete("/api/jobs/by-barcode/:barcode", async (req, res) => {
+    const barcode = String(req.params.barcode || "").trim().toUpperCase();
+    if (!barcode) return res.status(400).json({ message: "Barcode is required" });
+
+    const indexed = await storage.getDocumentByBarcode(barcode);
+    let job = indexed ? await storage.getScanJob(indexed.scanJobId) : undefined;
+    if (!job) {
+      const jobs = await storage.getScanJobs();
+      job = jobs.find((item) => String(item.barcodeValue || "").toUpperCase() === barcode);
+    }
+    if (!job) return res.status(404).json({ message: "Job not found" });
+
+    const outputPath = path.join(OUTPUT_DIR, job.fileName);
+    if (fs.existsSync(outputPath)) {
+      fs.unlinkSync(outputPath);
+    }
+
+    await storage.deleteScanJob(job.id);
     res.status(204).send();
   });
 
@@ -269,6 +554,8 @@ export async function registerRoutes(
       const pdfBytes = await pdfDoc.save();
       const outputPath = path.join(OUTPUT_DIR, fileName);
       fs.writeFileSync(outputPath, pdfBytes);
+      const extractedMetadata = await detectMetadataFromPdf(outputPath);
+      await writeWindowsShellProperties(outputPath, extractedMetadata);
       ensureSaveToTargetDirectory(outputPath, fileName, settings.savePath);
 
       const job = await storage.createScanJob({
@@ -277,11 +564,18 @@ export async function registerRoutes(
         pageCount: pdfDoc.getPageCount(),
         fileSize: pdfBytes.length,
         barcodeValue: barcodeValue || null,
+        docDate: extractedMetadata.docDate,
+        customerName: extractedMetadata.customerName,
+        accountNumber: extractedMetadata.accountNumber,
+        totalAmount: extractedMetadata.totalAmount,
+        notes: extractedMetadata.notes,
+        metadataJson: extractedMetadata,
         scannerName: scannerName || "Sharp MX-M503N",
         dpi: dpi || "300",
         colorMode: colorMode || "color",
         duplex: duplex === "true",
       });
+      await upsertDocumentIndexForJob(job);
 
       res.status(201).json(job);
     } catch (error: any) {
@@ -415,6 +709,8 @@ export async function registerRoutes(
         const outputPath = path.join(OUTPUT_DIR, fileName);
         const segmentBytes = await segmentPdf.save();
         fs.writeFileSync(outputPath, segmentBytes);
+        const extractedMetadata = await detectMetadataFromPdf(outputPath);
+        await writeWindowsShellProperties(outputPath, extractedMetadata);
         ensureSaveToTargetDirectory(outputPath, fileName, settings.savePath);
 
         const stats = fs.statSync(outputPath);
@@ -424,11 +720,18 @@ export async function registerRoutes(
           pageCount: segmentPdf.getPageCount(),
           fileSize: Number(stats.size),
           barcodeValue: segment.code,
+          docDate: extractedMetadata.docDate,
+          customerName: extractedMetadata.customerName,
+          accountNumber: extractedMetadata.accountNumber,
+          totalAmount: extractedMetadata.totalAmount,
+          notes: extractedMetadata.notes,
+          metadataJson: extractedMetadata,
           scannerName: resolvedScannerName,
           dpi: String(dpi || settings.defaultDpi || "300"),
           colorMode: String(colorMode || settings.defaultColorMode || "color"),
           duplex: duplex === true || duplex === "true",
         });
+        await upsertDocumentIndexForJob(job);
         jobs.push(job);
       }
 
@@ -454,6 +757,24 @@ export async function registerRoutes(
     }
 
     res.download(filePath, job.fileName);
+  });
+
+  app.get("/api/jobs/:id/open", async (req, res) => {
+    const job = await storage.getScanJob(req.params.id);
+    if (!job) return res.status(404).json({ message: "Job not found" });
+
+    const outputPath = path.join(OUTPUT_DIR, job.fileName);
+    const targetPath = job.filePath || "";
+    const filePath = fs.existsSync(outputPath)
+      ? outputPath
+      : (targetPath && fs.existsSync(targetPath) ? targetPath : "");
+    if (!filePath) {
+      return res.status(404).json({ message: "File not found on disk" });
+    }
+
+    res.setHeader("Content-Disposition", `inline; filename="${job.fileName}"`);
+    res.type("application/pdf");
+    res.sendFile(filePath);
   });
 
   app.get("/api/jobs/:id/page/:pageNum", async (req, res) => {
